@@ -22,6 +22,7 @@
  */
 
 #include "Player.h"
+#include "GameTime.h"
 #include "ScriptMgr.h"
 #include "SpellScript.h"
 #include "SpellAuraEffects.h"
@@ -234,7 +235,7 @@ class spell_dru_eclipse : public SpellScriptLoader
                 if (!spellInfo || !(spellInfo->SpellFamilyFlags[0] & 4)) // Starfire
                     return false;
 
-                return _solarProcCooldownEnd <= std::chrono::steady_clock::now();
+                return _solarProcCooldownEnd <= GameTime::GetGameTimeSteadyPoint();
             }
 
             bool CheckLunar(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
@@ -247,14 +248,14 @@ class spell_dru_eclipse : public SpellScriptLoader
                 if (!roll_chance_i(60))
                     return false;
 
-                return _lunarProcCooldownEnd <= std::chrono::steady_clock::now();
+                return _lunarProcCooldownEnd <= GameTime::GetGameTimeSteadyPoint();
             }
 
             void ProcSolar(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
             {
                 PreventDefaultAction();
 
-                _solarProcCooldownEnd = std::chrono::steady_clock::now() + Seconds(30);
+                _solarProcCooldownEnd = GameTime::GetGameTimeSteadyPoint() + Seconds(30);
                 eventInfo.GetActor()->CastSpell(eventInfo.GetActor(), SPELL_DRUID_ECLIPSE_SOLAR_PROC, TRIGGERED_FULL_MASK, nullptr, aurEff);
             }
 
@@ -262,7 +263,7 @@ class spell_dru_eclipse : public SpellScriptLoader
             {
                 PreventDefaultAction();
 
-                _lunarProcCooldownEnd = std::chrono::steady_clock::now() + Seconds(30);
+                _lunarProcCooldownEnd = GameTime::GetGameTimeSteadyPoint() + Seconds(30);
                 eventInfo.GetActor()->CastSpell(eventInfo.GetActor(), SPELL_DRUID_ECLIPSE_LUNAR_PROC, TRIGGERED_FULL_MASK, nullptr, aurEff);
             }
 
@@ -309,13 +310,16 @@ class spell_dru_enrage : public SpellScriptLoader
 
             void RecalculateBaseArmor()
             {
+                // Recalculate modifies the list while we're iterating through it, so let's copy it instead
                 Unit::AuraEffectList const& auras = GetTarget()->GetAuraEffectsByType(SPELL_AURA_MOD_BASE_RESISTANCE_PCT);
-                for (Unit::AuraEffectList::const_iterator i = auras.begin(); i != auras.end(); ++i)
+                std::vector<AuraEffect*> aurEffs(auras.begin(), auras.end());
+
+                for (AuraEffect* aurEff : aurEffs)
                 {
-                    SpellInfo const* spellInfo = (*i)->GetSpellInfo();
+                    SpellInfo const* spellInfo = aurEff->GetSpellInfo();
                     // Dire- / Bear Form (Passive)
                     if (spellInfo->SpellFamilyName == SPELLFAMILY_DRUID && spellInfo->SpellFamilyFlags.HasFlag(0x0, 0x0, 0x2))
-                        (*i)->RecalculateAmount();
+                        aurEff->RecalculateAmount();
                 }
             }
 

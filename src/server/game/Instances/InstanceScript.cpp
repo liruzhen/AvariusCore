@@ -120,7 +120,7 @@ void InstanceScript::LoadBossBoundaries(const BossBoundaryData& data)
 {
     for (BossBoundaryEntry const& entry : data)
         if (entry.BossId < bosses.size())
-            bosses[entry.BossId].boundary.insert(entry.Boundary);
+            bosses[entry.BossId].boundary.push_back(entry.Boundary);
 }
 
 void InstanceScript::LoadMinionData(const MinionData* data)
@@ -373,7 +373,7 @@ void InstanceScript::ReadSaveDataBossStates(std::istringstream& data)
     {
         uint32 buff;
         data >> buff;
-        if (buff == IN_PROGRESS || buff == SPECIAL)
+        if (buff == IN_PROGRESS || buff == FAIL || buff == SPECIAL)
             buff = NOT_STARTED;
 
         if (buff < TO_BE_DECIDED)

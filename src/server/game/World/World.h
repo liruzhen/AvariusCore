@@ -228,13 +228,13 @@ enum WorldIntConfigs
     CONFIG_CHARACTER_CREATING_DISABLED_CLASSMASK,
     CONFIG_CHARACTERS_PER_ACCOUNT,
     CONFIG_CHARACTERS_PER_REALM,
-    CONFIG_HEROIC_CHARACTERS_PER_REALM,
-    CONFIG_CHARACTER_CREATING_MIN_LEVEL_FOR_HEROIC_CHARACTER,
+    CONFIG_DEATH_KNIGHTS_PER_REALM,
+    CONFIG_CHARACTER_CREATING_MIN_LEVEL_FOR_DEATH_KNIGHT,
     CONFIG_SKIP_CINEMATICS,
     CONFIG_MAX_PLAYER_LEVEL,
     CONFIG_MIN_DUALSPEC_LEVEL,
     CONFIG_START_PLAYER_LEVEL,
-    CONFIG_START_HEROIC_PLAYER_LEVEL,
+    CONFIG_START_DEATH_KNIGHT_PLAYER_LEVEL,
     CONFIG_START_PLAYER_MONEY,
     CONFIG_MAX_HONOR_POINTS,
     CONFIG_START_HONOR_POINTS,
@@ -317,8 +317,6 @@ enum WorldIntConfigs
     CONFIG_PVP_TOKEN_MAP_TYPE,
     CONFIG_PVP_TOKEN_ID,
     CONFIG_PVP_TOKEN_COUNT,
-    CONFIG_INTERVAL_LOG_UPDATE,
-    CONFIG_MIN_LOG_UPDATE,
     CONFIG_ENABLE_SINFO_LOGIN,
     CONFIG_PLAYER_ALLOW_COMMANDS,
     CONFIG_NUMTHREADS,
@@ -333,7 +331,7 @@ enum WorldIntConfigs
     CONFIG_CHARDELETE_KEEP_DAYS,
     CONFIG_CHARDELETE_METHOD,
     CONFIG_CHARDELETE_MIN_LEVEL,
-    CONFIG_CHARDELETE_HEROIC_MIN_LEVEL,
+    CONFIG_CHARDELETE_DEATH_KNIGHT_MIN_LEVEL,
     CONFIG_AUTOBROADCAST_CENTER,
     CONFIG_AUTOBROADCAST_INTERVAL,
     CONFIG_MAX_RESULTS_LOOKUP_COMMANDS,
@@ -617,11 +615,6 @@ class TC_GAME_API World
         /// Allow/Disallow object movements
         void SetAllowMovement(bool allow) { m_allowMovement = allow; }
 
-        /// Set a new Message of the Day
-        void SetMotd(std::string const& motd);
-        /// Get the current Message of the Day
-        const char* GetMotd() const;
-
         /// Set the string for new characters (first login)
         void SetNewCharString(std::string const& str) { m_newCharString = str; }
         /// Get the string for new characters (first login)
@@ -631,16 +624,6 @@ class TC_GAME_API World
 
         /// Get the path where data (dbc, maps) are stored on disk
         std::string const& GetDataPath() const { return m_dataPath; }
-
-        /// When server started?
-        time_t const& GetStartTime() const { return m_startTime; }
-        /// What time is it?
-        time_t const& GetGameTime() const { return m_gameTime; }
-        /// Uptime (in secs)
-        uint32 GetUptime() const { return uint32(m_gameTime - m_startTime); }
-        /// Update time
-        uint32 GetUpdateTime() const { return m_updateTime; }
-        void SetRecordDiffInterval(int32 t) { if (t >= 0) m_int_configs[CONFIG_INTERVAL_LOG_UPDATE] = (uint32)t; }
 
         /// Next daily quests and random bg reset time
         time_t GetNextDailyQuestsResetTime() const { return m_NextDailyQuestReset; }
@@ -761,9 +744,6 @@ class TC_GAME_API World
         void LoadDBVersion();
         char const* GetDBVersion() const { return m_DBVersion.c_str(); }
 
-        void ResetTimeDiffRecord();
-        void RecordTimeDiff(std::string const& text);
-
         void LoadAutobroadcasts();
 
         void UpdateAreaDependentAuras();
@@ -778,6 +758,7 @@ class TC_GAME_API World
 
     protected:
         void _UpdateGameTime();
+
         // callback for UpdateRealmCharacters
         void _UpdateRealmCharCount(PreparedQueryResult resultCharCount);
 
@@ -804,14 +785,9 @@ class TC_GAME_API World
 
         bool m_isClosed;
 
-        time_t m_startTime;
-        time_t m_gameTime;
         IntervalTimer m_timers[WUPDATE_COUNT];
         time_t mail_timer;
         time_t mail_timer_expires;
-        uint32 m_updateTime, m_updateTimeSum;
-        uint32 m_updateTimeCount;
-        uint32 m_currentTime;
 
         SessionMap m_sessions;
         typedef std::unordered_map<uint32, time_t> DisconnectMap;
@@ -835,7 +811,6 @@ class TC_GAME_API World
         uint32 m_availableDbcLocaleMask;                       // by loaded DBC
         void DetectDBCLang();
         bool m_allowMovement;
-        std::string m_motd;
         std::string m_dataPath;
 
         // for max speed access

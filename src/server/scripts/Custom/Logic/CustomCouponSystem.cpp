@@ -26,13 +26,15 @@ enum Belohnungen
 
 void CustomCouponSystem::insertNewCouponCodeinDB(std::string code, int itemid, int itemquantity, int used, int useablequantity)
 {
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_ITEMCODE);
 	stmt->setString(0, code);
 	stmt->setUInt32(1, itemid);
 	stmt->setUInt32(2, itemquantity);
 	stmt->setUInt32(3, used);
 	stmt->setUInt32(4, useablequantity);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 
 }
 
@@ -56,12 +58,13 @@ std::string CustomCouponSystem::createNewCouponCode()
 
 void CustomCouponSystem::insertNewPlayerUsedCode(std::string charactername, int accountid, std::string couponcode)
 {
-
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_ITEMCODEACCOUNT);
 	stmt->setString(0, charactername);
 	stmt->setUInt32(1, accountid);
 	stmt->setString(2, couponcode);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 PreparedQueryResult CustomCouponSystem::getRequestedCodeData(std::string couponcode)
@@ -115,10 +118,12 @@ bool CustomCouponSystem::isItemCodeStillValid(std::string couponcode)
 
 void CustomCouponSystem::updateCouponCodeUsed(int used, std::string couponcode)
 {
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ITEMCODEUSED);
 	stmt->setInt32(0, used);
 	stmt->setString(1, couponcode);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 int CustomCouponSystem::getFortuneItem()
@@ -414,7 +419,7 @@ void CustomCouponSystem::couponGenerationperCommand(Player * player, const char 
 
 		std::string accountname = "";
 		accountname = CharacterSystem->getAccountName(player->GetSession()->GetAccountId());
-		GMLogic->addCompleteGMCountLogic(player->GetSession()->GetAccountId(), player->GetSession()->GetPlayer(), "Tries to create a forbidden Coupon!");
+		GMLogic->addCompleteGMCountLogic( player->GetSession()->GetPlayer(), "Tries to create a forbidden Coupon!");
 		ChatHandler(player->GetSession()).PSendSysMessage("##########################################################");
 		ChatHandler(player->GetSession()).PSendSysMessage("Warning: GM should be a supporter not a cheater!");
 		ChatHandler(player->GetSession()).PSendSysMessage("This incident has been logged in DB.");
@@ -500,11 +505,12 @@ void CustomCouponSystem::playerCouponGenerationAndRedeeming(Player * player, std
 
 	if (player->HasEnoughMoney(couponcost * GOLD)) {
 		player->ModifyMoney(-couponcost * GOLD);
-		std::string couponcode = "";
-		couponcode = createNewCouponCode();
+		std::string couponCode = "";
+		couponCode = createNewCouponCode();
 		int rewarditem = getFortuneItem();
 		uint32 quantity = 1 + (std::rand() % (15 - 1 + 1));
-		insertNewCouponCodeinDB(couponcode, rewarditem, quantity, 1, 1);
+		insertNewCouponCodeinDB(couponCode, rewarditem, quantity, 1, 1);
+		insertNewPlayerUsedCode(player->GetSession()->GetPlayerName(), player->GetSession()->GetAccountId(), couponCode);
 		CharacterSystem->sendPlayerMailwithItem(rewarditem, quantity, "Your CouponCode", "Here is your CouponCode\n Have fun with your Reward. \n Feel free to do all what you want with it!", player->GetSession()->GetPlayer());
 		PlayerLog->addCompletePlayerLog(player->GetSession()->GetPlayer(), logmessage);
 		ChatHandler(player->GetSession()).PSendSysMessage("##########################################################",

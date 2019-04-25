@@ -40,6 +40,7 @@
 #include "DisableMgr.h"
 #include "Formulas.h"
 #include "GameEventMgr.h"
+#include "GameTime.h"
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -53,6 +54,7 @@
 #include "LFGMgr.h"
 #include "Language.h"
 #include "Log.h"
+#include "LootItemStorage.h"
 #include "MapManager.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -458,8 +460,8 @@ Player::Player(WorldSession* session): Unit(true)
 
     for (uint8 i = 0; i < BASEMOD_END; ++i)
     {
-        m_auraBaseMod[i][FLAT_MOD] = 0.0f;
-        m_auraBaseMod[i][PCT_MOD] = 1.0f;
+        m_auraBaseFlatMod[i] = 0.0f;
+        m_auraBasePctMod[i] = 1.0f;
     }
 
     for (uint8 i = 0; i < MAX_COMBAT_RATING; i++)
@@ -683,7 +685,7 @@ bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo
     // set starting level
     uint32 start_level = getClass() != CLASS_DEATH_KNIGHT
         ? sWorld->getIntConfig(CONFIG_START_PLAYER_LEVEL)
-        : sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL);
+        : sWorld->getIntConfig(CONFIG_START_DEATH_KNIGHT_PLAYER_LEVEL);
 
     if (m_session->HasPermission(rbac::RBAC_PERM_USE_START_GM_LEVEL))
     {
@@ -1223,7 +1225,7 @@ void Player::Update(uint32 p_time)
     _cinematicMgr->m_cinematicDiff += p_time;
     if (_cinematicMgr->m_cinematicCamera && _cinematicMgr->m_activeCinematicCameraId && GetMSTimeDiffToNow(_cinematicMgr->m_lastCinematicCheck) > CINEMATIC_UPDATEDIFF)
     {
-        _cinematicMgr->m_lastCinematicCheck = getMSTime();
+        _cinematicMgr->m_lastCinematicCheck = GameTime::GetGameTimeMS();
         _cinematicMgr->UpdateCinematicLocation(p_time);
     }
 
@@ -2982,14 +2984,14 @@ void Player::InitStatsForLevel(bool reapplyMods)
 
     // set armor (resistance 0) to original value (create_agility*2)
     SetArmor(int32(m_createStats[STAT_AGILITY]*2));
-    SetResistanceBuffMods(SPELL_SCHOOL_NORMAL, true, 0.0f);
-    SetResistanceBuffMods(SPELL_SCHOOL_NORMAL, false, 0.0f);
+    SetFloatValue(UNIT_FIELD_RESISTANCEBUFFMODSPOSITIVE + SPELL_SCHOOL_NORMAL, 0.0f);
+    SetFloatValue(UNIT_FIELD_RESISTANCEBUFFMODSNEGATIVE + SPELL_SCHOOL_NORMAL, 0.0f);
     // set other resistance to original value (0)
     for (uint8 i = SPELL_SCHOOL_HOLY; i < MAX_SPELL_SCHOOL; ++i)
     {
         SetResistance(SpellSchools(i), 0);
-        SetResistanceBuffMods(SpellSchools(i), true, 0.0f);
-        SetResistanceBuffMods(SpellSchools(i), false, 0.0f);
+        SetFloatValue(UNIT_FIELD_RESISTANCEBUFFMODSPOSITIVE + i, 0.0f);
+        SetFloatValue(UNIT_FIELD_RESISTANCEBUFFMODSNEGATIVE + i, 0.0f);
     }
 
     SetUInt32Value(PLAYER_FIELD_MOD_TARGET_RESISTANCE, 0);
@@ -3324,7 +3326,7 @@ bool Player::AddSpell(uint32 spellId, bool active, bool learning, bool dependent
 
             if (active)
             {
-                if (spellInfo->IsPassive() && IsNeedCastPassiveSpellAtLearn(spellInfo))
+                if (spellInfo->IsPassive() && HandlePassiveSpellLearn(spellInfo))
                     CastSpell(this, spellId, true);
             }
             else if (IsInWorld())
@@ -3469,7 +3471,7 @@ bool Player::AddSpell(uint32 spellId, bool active, bool learning, bool dependent
     // also cast passive spells (including all talents without SPELL_EFFECT_LEARN_SPELL) with additional checks
     else if (spellInfo->IsPassive())
     {
-        if (IsNeedCastPassiveSpellAtLearn(spellInfo))
+        if (HandlePassiveSpellLearn(spellInfo))
             CastSpell(this, spellId, true);
     }
     else if (spellInfo->HasEffect(SPELL_EFFECT_SKILL_STEP))
@@ -3591,7 +3593,7 @@ void Player::RemoveTemporarySpell(uint32 spellId)
     m_spells.erase(itr);
 }
 
-bool Player::IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const
+bool Player::HandlePassiveSpellLearn(SpellInfo const* spellInfo)
 {
     // note: form passives activated with shapeshift spells be implemented by HandleShapeshiftBoosts instead of spell_learn_spell
     // talent dependent passives activated at form apply have proper stance data
@@ -3600,12 +3602,18 @@ bool Player::IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const
         (!form && spellInfo->HasAttribute(SPELL_ATTR2_NOT_NEED_SHAPESHIFT)));
 
     // Check EquippedItemClass
-    // passive spells which apply aura and have an item requirement are to be added in Player::ApplyItemDependentAuras
-    if (spellInfo->IsPassive() && spellInfo->EquippedItemClass >= 0)
+    // passive spells which apply aura and have an item requirement are to be added manually, instead of casted
+    if (spellInfo->EquippedItemClass >= 0)
     {
         for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
             if (spellInfo->Effects[i].IsAura())
+            {
+                if (!HasAura(spellInfo->Id) && HasItemFitToSpellRequirements(spellInfo))
+                    AddAura(spellInfo->Id, this);
                 return false;
+            }
+        }
     }
 
     //Check CasterAuraStates
@@ -3919,7 +3927,7 @@ uint32 Player::ResetTalentsCost() const
         return 10*GOLD;
     else
     {
-        uint64 months = (sWorld->GetGameTime() - m_resetTalentsTime)/MONTH;
+        uint64 months = (GameTime::GetGameTime() - m_resetTalentsTime)/MONTH;
         if (months > 0)
         {
             // This cost will be reduced by a rate of 5 gold per month
@@ -4232,7 +4240,7 @@ void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRe
     else if (characterInfo)    // To avoid a query, we select loaded data. If it doesn't exist, return.
     {
         // Define the required variables
-        uint32 charDelete_minLvl = sWorld->getIntConfig(characterInfo->Class != CLASS_DEATH_KNIGHT ? CONFIG_CHARDELETE_MIN_LEVEL : CONFIG_CHARDELETE_HEROIC_MIN_LEVEL);
+        uint32 charDelete_minLvl = sWorld->getIntConfig(characterInfo->Class != CLASS_DEATH_KNIGHT ? CONFIG_CHARDELETE_MIN_LEVEL : CONFIG_CHARDELETE_DEATH_KNIGHT_MIN_LEVEL);
 
         // if we want to finalize the character removal or the character does not meet the level requirement of either heroic or non-heroic settings,
         // we set it to mode CHAR_DELETE_REMOVE
@@ -5303,20 +5311,104 @@ void Player::UpdateDefense()
         UpdateDefenseBonusesMod(); // update dependent from defense skill part
 }
 
-void Player::HandleBaseModValue(BaseModGroup modGroup, BaseModType modType, float amount, bool apply)
+void Player::HandleBaseModFlatValue(BaseModGroup modGroup, float amount, bool apply)
 {
-    if (modGroup >= BASEMOD_END || modType >= MOD_END)
+    if (modGroup >= BASEMOD_END)
     {
         TC_LOG_ERROR("spells", "Player::HandleBaseModValue: Invalid BaseModGroup/BaseModType (%u/%u) for player '%s' (%s)",
-            modGroup, modType, GetName().c_str(), GetGUID().ToString().c_str());
+            modGroup, FLAT_MOD, GetName().c_str(), GetGUID().ToString().c_str());
         return;
     }
 
-    if (modType == FLAT_MOD)
-        m_auraBaseMod[modGroup][modType] += apply ? amount : -amount;
-    else // PCT_MOD
-        ApplyPercentModFloatVar(m_auraBaseMod[modGroup][modType], amount, apply);
+    m_auraBaseFlatMod[modGroup] += apply ? amount : -amount;
+    UpdateBaseModGroup(modGroup);
+}
 
+void Player::ApplyBaseModPctValue(BaseModGroup modGroup, float pct)
+{
+    if (modGroup >= BASEMOD_END)
+    {
+        TC_LOG_ERROR("spells", "Player::HandleBaseModValue: Invalid BaseModGroup/BaseModType (%u/%u) for player '%s' (%s)",
+            modGroup, FLAT_MOD, GetName().c_str(), GetGUID().ToString().c_str());
+        return;
+    }
+
+    AddPct(m_auraBasePctMod[modGroup], pct);
+    UpdateBaseModGroup(modGroup);
+}
+
+void Player::SetBaseModFlatValue(BaseModGroup modGroup, float val)
+{
+    if (m_auraBaseFlatMod[modGroup] == val)
+        return;
+
+    m_auraBaseFlatMod[modGroup] = val;
+    UpdateBaseModGroup(modGroup);
+}
+
+void Player::SetBaseModPctValue(BaseModGroup modGroup, float val)
+{
+    if (m_auraBasePctMod[modGroup] == val)
+        return;
+
+    m_auraBasePctMod[modGroup] = val;
+    UpdateBaseModGroup(modGroup);
+}
+
+void Player::UpdateDamageDoneMods(WeaponAttackType attackType)
+{
+    Unit::UpdateDamageDoneMods(attackType);
+
+    UnitMods unitMod;
+    switch (attackType)
+    {
+        case BASE_ATTACK:
+            unitMod = UNIT_MOD_DAMAGE_MAINHAND;
+            break;
+        case OFF_ATTACK:
+            unitMod = UNIT_MOD_DAMAGE_OFFHAND;
+            break;
+        case RANGED_ATTACK:
+            unitMod = UNIT_MOD_DAMAGE_RANGED;
+            break;
+        default:
+            ABORT();
+            break;
+    }
+
+    float amount = 0.0f;
+    Item* item = GetWeaponForAttack(attackType, true);
+    if (!item)
+        return;
+
+    for (uint8 slot = 0; slot < MAX_ENCHANTMENT_SLOT; ++slot)
+    {
+        SpellItemEnchantmentEntry const* enchantmentEntry = sSpellItemEnchantmentStore.LookupEntry(item->GetEnchantmentId(EnchantmentSlot(slot)));
+        if (!enchantmentEntry)
+            continue;
+
+        for (uint8 i = 0; i < MAX_ITEM_ENCHANTMENT_EFFECTS; ++i)
+        {
+            switch (enchantmentEntry->type[i])
+            {
+                case ITEM_ENCHANTMENT_TYPE_DAMAGE:
+                    amount += enchantmentEntry->amount[i];
+                    break;
+                case ITEM_ENCHANTMENT_TYPE_TOTEM:
+                    if (getClass() == CLASS_SHAMAN)
+                        amount += enchantmentEntry->amount[i] * item->GetTemplate()->Delay / 1000.0f;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    HandleStatFlatModifier(unitMod, TOTAL_VALUE, amount, true);
+}
+
+void Player::UpdateBaseModGroup(BaseModGroup modGroup)
+{
     if (!CanModifyStats())
         return;
 
@@ -5339,10 +5431,7 @@ float Player::GetBaseModValue(BaseModGroup modGroup, BaseModType modType) const
         return 0.0f;
     }
 
-    if (modType == PCT_MOD && m_auraBaseMod[modGroup][PCT_MOD] <= 0.0f)
-        return 0.0f;
-
-    return m_auraBaseMod[modGroup][modType];
+    return (modType == FLAT_MOD ? m_auraBaseFlatMod[modGroup] : m_auraBasePctMod[modGroup]);
 }
 
 float Player::GetTotalBaseModValue(BaseModGroup modGroup) const
@@ -5354,18 +5443,12 @@ float Player::GetTotalBaseModValue(BaseModGroup modGroup) const
         return 0.0f;
     }
 
-    if (m_auraBaseMod[modGroup][PCT_MOD] <= 0.0f)
-        return 0.0f;
-
-    return m_auraBaseMod[modGroup][FLAT_MOD] * m_auraBaseMod[modGroup][PCT_MOD];
+    return m_auraBaseFlatMod[modGroup] * m_auraBasePctMod[modGroup];
 }
 
 uint32 Player::GetShieldBlockValue() const
 {
-    float value = (m_auraBaseMod[SHIELD_BLOCK_VALUE][FLAT_MOD] + GetStat(STAT_STRENGTH) * 0.5f - 10)*m_auraBaseMod[SHIELD_BLOCK_VALUE][PCT_MOD];
-
-    value = (value < 0) ? 0 : value;
-
+    float value = std::max(0.f, (m_auraBaseFlatMod[SHIELD_BLOCK_VALUE] + GetStat(STAT_STRENGTH) * 0.5f - 10) * m_auraBasePctMod[SHIELD_BLOCK_VALUE]);
     return uint32(value);
 }
 
@@ -5431,7 +5514,7 @@ void Player::GetDodgeFromAgility(float &diminishing, float &nondiminishing) cons
         return;
 
     /// @todo research if talents/effects that increase total agility by x% should increase non-diminishing part
-    float base_agility = GetCreateStat(STAT_AGILITY) * m_auraModifiersGroup[UNIT_MOD_STAT_START + STAT_AGILITY][BASE_PCT];
+    float base_agility = GetCreateStat(STAT_AGILITY) * GetPctModifierValue(UnitMods(UNIT_MOD_STAT_START + STAT_AGILITY), BASE_PCT);
     float bonus_agility = GetStat(STAT_AGILITY) - base_agility;
 
     // calculate diminishing (green in char screen) and non-diminishing (white) contribution
@@ -5654,7 +5737,7 @@ void Player::UpdateRating(CombatRating cr)
 
 void Player::UpdateAllRatings()
 {
-    for (int cr = 0; cr < MAX_COMBAT_RATING; ++cr)
+    for (uint8 cr = 0; cr < MAX_COMBAT_RATING; ++cr)
         UpdateRating(CombatRating(cr));
 }
 
@@ -6695,8 +6778,8 @@ void Player::RewardReputation(Unit* victim, float rate)
 
         FactionEntry const* factionEntry1 = sFactionStore.LookupEntry(ChampioningFaction ? ChampioningFaction : Rep->RepFaction1);
         uint32 current_reputation_rank1 = GetReputationMgr().GetRank(factionEntry1);
-        if (factionEntry1 && current_reputation_rank1 <= Rep->ReputationMaxCap1)
-            GetReputationMgr().ModifyReputation(factionEntry1, donerep1);
+        if (factionEntry1)
+            GetReputationMgr().ModifyReputation(factionEntry1, donerep1, current_reputation_rank1 > Rep->ReputationMaxCap1);
     }
 
     if (Rep->RepFaction2 && (!Rep->TeamDependent || team == HORDE))
@@ -6706,8 +6789,8 @@ void Player::RewardReputation(Unit* victim, float rate)
 
         FactionEntry const* factionEntry2 = sFactionStore.LookupEntry(ChampioningFaction ? ChampioningFaction : Rep->RepFaction2);
         uint32 current_reputation_rank2 = GetReputationMgr().GetRank(factionEntry2);
-        if (factionEntry2 && current_reputation_rank2 <= Rep->ReputationMaxCap2)
-            GetReputationMgr().ModifyReputation(factionEntry2, donerep2);
+        if (factionEntry2)
+            GetReputationMgr().ModifyReputation(factionEntry2, donerep2, current_reputation_rank2 > Rep->ReputationMaxCap2);
     }
 }
 
@@ -7365,7 +7448,13 @@ void Player::_ApplyItemMods(Item* item, uint8 slot, bool apply, bool updateItemA
 
     ApplyItemEquipSpell(item, apply);
     if (updateItemAuras)
+    {
         ApplyItemDependentAuras(item, apply);
+
+        WeaponAttackType const attackType = Player::GetAttackBySlot(slot);
+        if (attackType != MAX_ATTACK)
+            UpdateWeaponDependentAuras(attackType);
+    }
 
     ApplyEnchantment(item, apply);
 
@@ -7416,30 +7505,30 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
         switch (statType)
         {
             case ITEM_MOD_MANA:
-                HandleStatModifier(UNIT_MOD_MANA, BASE_VALUE, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_MANA, BASE_VALUE, float(val), apply);
                 break;
             case ITEM_MOD_HEALTH:                           // modify HP
-                HandleStatModifier(UNIT_MOD_HEALTH, BASE_VALUE, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_HEALTH, BASE_VALUE, float(val), apply);
                 break;
             case ITEM_MOD_AGILITY:                          // modify agility
-                HandleStatModifier(UNIT_MOD_STAT_AGILITY, BASE_VALUE, float(val), apply);
-                ApplyStatBuffMod(STAT_AGILITY, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_STAT_AGILITY, BASE_VALUE, float(val), apply);
+                UpdateStatBuffMod(STAT_AGILITY);
                 break;
             case ITEM_MOD_STRENGTH:                         //modify strength
-                HandleStatModifier(UNIT_MOD_STAT_STRENGTH, BASE_VALUE, float(val), apply);
-                ApplyStatBuffMod(STAT_STRENGTH, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_STAT_STRENGTH, BASE_VALUE, float(val), apply);
+                UpdateStatBuffMod(STAT_STRENGTH);
                 break;
             case ITEM_MOD_INTELLECT:                        //modify intellect
-                HandleStatModifier(UNIT_MOD_STAT_INTELLECT, BASE_VALUE, float(val), apply);
-                ApplyStatBuffMod(STAT_INTELLECT, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_STAT_INTELLECT, BASE_VALUE, float(val), apply);
+                UpdateStatBuffMod(STAT_INTELLECT);
                 break;
             case ITEM_MOD_SPIRIT:                           //modify spirit
-                HandleStatModifier(UNIT_MOD_STAT_SPIRIT, BASE_VALUE, float(val), apply);
-                ApplyStatBuffMod(STAT_SPIRIT, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_STAT_SPIRIT, BASE_VALUE, float(val), apply);
+                UpdateStatBuffMod(STAT_SPIRIT);
                 break;
             case ITEM_MOD_STAMINA:                          //modify stamina
-                HandleStatModifier(UNIT_MOD_STAT_STAMINA, BASE_VALUE, float(val), apply);
-                ApplyStatBuffMod(STAT_STAMINA, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_STAT_STAMINA, BASE_VALUE, float(val), apply);
+                UpdateStatBuffMod(STAT_STAMINA);
                 break;
             case ITEM_MOD_DEFENSE_SKILL_RATING:
                 ApplyRatingMod(CR_DEFENSE_SKILL, int32(val), apply);
@@ -7532,11 +7621,11 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
                 ApplyRatingMod(CR_EXPERTISE, int32(val), apply);
                 break;
             case ITEM_MOD_ATTACK_POWER:
-                HandleStatModifier(UNIT_MOD_ATTACK_POWER, TOTAL_VALUE, float(val), apply);
-                HandleStatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER, TOTAL_VALUE, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(val), apply);
                 break;
             case ITEM_MOD_RANGED_ATTACK_POWER:
-                HandleStatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(val), apply);
+                HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(val), apply);
                 break;
 //            case ITEM_MOD_FERAL_ATTACK_POWER:
 //                ApplyFeralAPBonus(int32(val), apply);
@@ -7557,7 +7646,7 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
                 ApplySpellPenetrationBonus(val, apply);
                 break;
             case ITEM_MOD_BLOCK_VALUE:
-                HandleBaseModValue(SHIELD_BLOCK_VALUE, FLAT_MOD, float(val), apply);
+                HandleBaseModFlatValue(SHIELD_BLOCK_VALUE, float(val), apply);
                 break;
             // deprecated item mods
             case ITEM_MOD_SPELL_HEALING_DONE:
@@ -7583,7 +7672,7 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
 
     if (armor)
     {
-        UnitModifierType modType = TOTAL_VALUE;
+        UnitModifierFlatType modType = TOTAL_VALUE;
         if (proto->Class == ITEM_CLASS_ARMOR)
         {
             switch (proto->SubClass)
@@ -7597,33 +7686,33 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
                 break;
             }
         }
-        HandleStatModifier(UNIT_MOD_ARMOR, modType, float(armor), apply);
+        HandleStatFlatModifier(UNIT_MOD_ARMOR, modType, float(armor), apply);
     }
 
     // Add armor bonus from ArmorDamageModifier if > 0
     if (proto->ArmorDamageModifier > 0)
-        HandleStatModifier(UNIT_MOD_ARMOR, TOTAL_VALUE, float(proto->ArmorDamageModifier), apply);
+        HandleStatFlatModifier(UNIT_MOD_ARMOR, TOTAL_VALUE, float(proto->ArmorDamageModifier), apply);
 
     if (proto->Block)
-        HandleBaseModValue(SHIELD_BLOCK_VALUE, FLAT_MOD, float(proto->Block), apply);
+        HandleBaseModFlatValue(SHIELD_BLOCK_VALUE, float(proto->Block), apply);
 
     if (proto->HolyRes)
-        HandleStatModifier(UNIT_MOD_RESISTANCE_HOLY, BASE_VALUE, float(proto->HolyRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_HOLY, BASE_VALUE, float(proto->HolyRes), apply);
 
     if (proto->FireRes)
-        HandleStatModifier(UNIT_MOD_RESISTANCE_FIRE, BASE_VALUE, float(proto->FireRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_FIRE, BASE_VALUE, float(proto->FireRes), apply);
 
     if (proto->NatureRes)
-        HandleStatModifier(UNIT_MOD_RESISTANCE_NATURE, BASE_VALUE, float(proto->NatureRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_NATURE, BASE_VALUE, float(proto->NatureRes), apply);
 
     if (proto->FrostRes)
-        HandleStatModifier(UNIT_MOD_RESISTANCE_FROST, BASE_VALUE, float(proto->FrostRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_FROST, BASE_VALUE, float(proto->FrostRes), apply);
 
     if (proto->ShadowRes)
-        HandleStatModifier(UNIT_MOD_RESISTANCE_SHADOW, BASE_VALUE, float(proto->ShadowRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_SHADOW, BASE_VALUE, float(proto->ShadowRes), apply);
 
     if (proto->ArcaneRes)
-        HandleStatModifier(UNIT_MOD_RESISTANCE_ARCANE, BASE_VALUE, float(proto->ArcaneRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_ARCANE, BASE_VALUE, float(proto->ArcaneRes), apply);
 
     WeaponAttackType attType = BASE_ATTACK;
 
@@ -7760,6 +7849,49 @@ void Player::ApplyItemObtainSpells(Item* item, bool apply)
     }
 }
 
+// this one rechecks weapon auras and stores them in BaseModGroup container
+// needed for things like axe specialization applying only to axe weapons in case of dual-wield
+void Player::UpdateWeaponDependentCritAuras(WeaponAttackType attackType)
+{
+    BaseModGroup modGroup;
+    switch (attackType)
+    {
+        case BASE_ATTACK:
+            modGroup = CRIT_PERCENTAGE;
+            break;
+        case OFF_ATTACK:
+            modGroup = OFFHAND_CRIT_PERCENTAGE;
+            break;
+        case RANGED_ATTACK:
+            modGroup = RANGED_CRIT_PERCENTAGE;
+            break;
+        default:
+            ABORT();
+            break;
+    }
+
+    float amount = 0.0f;
+    amount += GetTotalAuraModifier(SPELL_AURA_MOD_WEAPON_CRIT_PERCENT, std::bind(&Unit::CheckAttackFitToAuraRequirement, this, attackType, std::placeholders::_1));
+
+    // these auras don't have item requirement (only Combat Expertise in 3.3.5a)
+    amount += GetTotalAuraModifier(SPELL_AURA_MOD_CRIT_PCT);
+
+    SetBaseModFlatValue(modGroup, amount);
+}
+
+void Player::UpdateAllWeaponDependentCritAuras()
+{
+    for (uint8 i = BASE_ATTACK; i < MAX_ATTACK; ++i)
+        UpdateWeaponDependentCritAuras(WeaponAttackType(i));
+}
+
+void Player::UpdateWeaponDependentAuras(WeaponAttackType attackType)
+{
+    UpdateWeaponDependentCritAuras(attackType);
+    UpdateDamageDoneMods(attackType);
+    UpdateDamagePctDoneMods(attackType);
+}
+
 void Player::ApplyItemDependentAuras(Item* item, bool apply)
 {
     if (apply)
@@ -7780,6 +7912,19 @@ void Player::ApplyItemDependentAuras(Item* item, bool apply)
     }
     else
         RemoveItemDependentAurasAndCasts(item);
+}
+
+bool Player::CheckAttackFitToAuraRequirement(WeaponAttackType attackType, AuraEffect const* aurEff) const
+{
+    SpellInfo const* spellInfo = aurEff->GetSpellInfo();
+    if (spellInfo->EquippedItemClass == -1)
+        return true;
+
+    Item* item = GetWeaponForAttack(attackType, true);
+    if (!item || !item->IsFitToSpellRequirements(spellInfo))
+        return false;
+
+    return true;
 }
 
 void Player::ApplyItemEquipSpell(Item* item, bool apply, bool form_change)
@@ -8202,6 +8347,10 @@ void Player::_ApplyAllItemMods()
             ApplyItemDependentAuras(m_items[i], true);
             _ApplyItemBonuses(proto, i, true);
 
+            WeaponAttackType const attackType = Player::GetAttackBySlot(i);
+            if (attackType != MAX_ATTACK)
+                UpdateWeaponDependentAuras(attackType);
+
             if (i == EQUIPMENT_SLOT_RANGED)
                 _ApplyAmmoBonuses();
         }
@@ -8370,6 +8519,11 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
 
         loot = &go->loot;
 
+        // loot was generated and respawntime has passed since then, allow to recreate loot
+        // to avoid bugs, this rule covers spawned gameobjects only
+        if (go->isSpawnedByDefault() && go->getLootState() == GO_ACTIVATED && !go->loot.isLooted() && go->GetLootGenerationTime() + go->GetRespawnDelay() < time(nullptr))
+            go->SetLootState(GO_READY);
+
         if (go->getLootState() == GO_READY)
         {
             uint32 lootid = go->GetGOInfo()->GetLootId();
@@ -8392,6 +8546,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                     group->UpdateLooterGuid(go, true);
 
                 loot->FillLoot(lootid, LootTemplates_Gameobject, this, !groupRules, false, go->GetLootMode());
+                go->SetLootGenerationTime();
 
                 // get next RR player (for next loot)
                 if (groupRules && !go->loot.empty())
@@ -8470,9 +8625,12 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
 
         loot = &item->loot;
 
+        // Store container id
+        loot->containerID = item->GetGUID().GetCounter();
+
         // If item doesn't already have loot, attempt to load it. If that
-        //  fails then this is first time opening, generate loot
-        if (!item->m_lootGenerated && !item->ItemContainerLoadLootFromDB())
+        // fails then this is first time opening, generate loot
+        if (!item->m_lootGenerated && !sLootItemStorage->LoadStoredLoot(item, this))
         {
             item->m_lootGenerated = true;
             loot->clear();
@@ -8495,7 +8653,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                     // Force save the loot and money items that were just rolled
                     //  Also saves the container item ID in Loot struct (not to DB)
                     if (loot->gold > 0 || loot->unlootedCount > 0)
-                        item->ItemContainerSaveLootToDB();
+                        sLootItemStorage->AddNewStoredLoot(loot, this);
 
                     break;
             }
@@ -9916,7 +10074,7 @@ Item* Player::GetShield(bool useable) const
     return item;
 }
 
-uint8 Player::GetAttackBySlot(uint8 slot)
+WeaponAttackType Player::GetAttackBySlot(uint8 slot)
 {
     switch (slot)
     {
@@ -12338,6 +12496,7 @@ void Player::DestroyItem(uint8 bag, uint8 slot, bool update)
         ItemRemovedQuestCheck(pItem->GetEntry(), pItem->GetCount());
         sScriptMgr->OnItemRemove(this, pItem);
 
+        ItemTemplate const* pProto = pItem->GetTemplate();
         if (bag == INVENTORY_SLOT_BAG_0)
         {
             SetGuidValue(PLAYER_FIELD_INV_SLOT_HEAD + (slot * 2), ObjectGuid::Empty);
@@ -12345,7 +12504,6 @@ void Player::DestroyItem(uint8 bag, uint8 slot, bool update)
             // equipment and equipped bags can have applied bonuses
             if (slot < INVENTORY_SLOT_BAG_END)
             {
-                ItemTemplate const* pProto = pItem->GetTemplate();
 
                 // item set bonuses applied only at equip and removed at unequip, and still active for broken items
                 if (pProto && pProto->ItemSet)
@@ -12383,9 +12541,8 @@ void Player::DestroyItem(uint8 bag, uint8 slot, bool update)
 
         // Delete rolled money / loot from db.
         // MUST be done before RemoveFromWorld() or GetTemplate() fails
-        if (ItemTemplate const* pTmp = pItem->GetTemplate())
-            if (pTmp->Flags & ITEM_FLAG_HAS_LOOT)
-                pItem->ItemContainerDeleteLootMoneyAndLootItemsFromDB();
+        if (pProto->Flags & ITEM_FLAG_HAS_LOOT)
+            sLootItemStorage->RemoveStoredLootForContainer(pItem->GetGUID().GetCounter());
 
         if (IsInWorld() && update)
         {
@@ -13137,7 +13294,7 @@ void Player::SwapItem(uint16 src, uint16 dst)
             {
                 if (Item* bagItem = bag->GetItemByPos(i))
                 {
-                    if (bagItem->m_lootGenerated)
+                    if (bagItem->GetGUID() == GetLootGUID())
                     {
                         m_session->DoLootRelease(GetLootGUID());
                         released = true;                    // so we don't need to look at dstBag
@@ -13154,7 +13311,7 @@ void Player::SwapItem(uint16 src, uint16 dst)
             {
                 if (Item* bagItem = bag->GetItemByPos(i))
                 {
-                    if (bagItem->m_lootGenerated)
+                    if (bagItem->GetGUID() == GetLootGUID())
                     {
                         m_session->DoLootRelease(GetLootGUID());
                         break;
@@ -13242,7 +13399,13 @@ void Player::RemoveItemFromBuyBackSlot(uint32 slot, bool del)
         {
             pItem->RemoveFromWorld();
             if (del)
+            {
+                if (ItemTemplate const* itemTemplate = pItem->GetTemplate())
+                    if (itemTemplate->Flags & ITEM_FLAG_HAS_LOOT)
+                        sLootItemStorage->RemoveStoredLootForContainer(pItem->GetGUID().GetCounter());
+
                 pItem->SetState(ITEM_REMOVED, this);
+            }
         }
 
         m_items[slot] = nullptr;
@@ -13613,7 +13776,7 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
 
     if (!item->IsBroken())
     {
-        for (int s = 0; s < MAX_ITEM_ENCHANTMENT_EFFECTS; ++s)
+        for (uint8 s = 0; s < MAX_ITEM_ENCHANTMENT_EFFECTS; ++s)
         {
             uint32 enchant_display_type = pEnchant->type[s];
             uint32 enchant_amount = pEnchant->amount[s];
@@ -13627,13 +13790,12 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                     // processed in Player::CastItemCombatSpell
                     break;
                 case ITEM_ENCHANTMENT_TYPE_DAMAGE:
-                    if (item->GetSlot() == EQUIPMENT_SLOT_MAINHAND)
-                        HandleStatModifier(UNIT_MOD_DAMAGE_MAINHAND, TOTAL_VALUE, float(enchant_amount), apply);
-                    else if (item->GetSlot() == EQUIPMENT_SLOT_OFFHAND)
-                        HandleStatModifier(UNIT_MOD_DAMAGE_OFFHAND, TOTAL_VALUE, float(enchant_amount), apply);
-                    else if (item->GetSlot() == EQUIPMENT_SLOT_RANGED)
-                        HandleStatModifier(UNIT_MOD_DAMAGE_RANGED, TOTAL_VALUE, float(enchant_amount), apply);
+                {
+                    WeaponAttackType const attackType = Player::GetAttackBySlot(item->GetSlot());
+                    if (attackType != MAX_ATTACK)
+                        UpdateDamageDoneMods(attackType);
                     break;
+                }
                 case ITEM_ENCHANTMENT_TYPE_EQUIP_SPELL:
                     if (enchant_spell_id)
                     {
@@ -13684,7 +13846,7 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                         }
                     }
 
-                    HandleStatModifier(UnitMods(UNIT_MOD_RESISTANCE_START + enchant_spell_id), TOTAL_VALUE, float(enchant_amount), apply);
+                    HandleStatFlatModifier(UnitMods(UNIT_MOD_RESISTANCE_START + enchant_spell_id), TOTAL_VALUE, float(enchant_amount), apply);
                     break;
                 case ITEM_ENCHANTMENT_TYPE_STAT:
                 {
@@ -13709,36 +13871,36 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                     {
                         case ITEM_MOD_MANA:
                             TC_LOG_DEBUG("entities.player.items", "+ %u MANA", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_MANA, BASE_VALUE, float(enchant_amount), apply);
+                            HandleStatFlatModifier(UNIT_MOD_MANA, BASE_VALUE, float(enchant_amount), apply);
                             break;
                         case ITEM_MOD_HEALTH:
                             TC_LOG_DEBUG("entities.player.items", "+ %u HEALTH", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_HEALTH, BASE_VALUE, float(enchant_amount), apply);
+                            HandleStatFlatModifier(UNIT_MOD_HEALTH, BASE_VALUE, float(enchant_amount), apply);
                             break;
                         case ITEM_MOD_AGILITY:
                             TC_LOG_DEBUG("entities.player.items", "+ %u AGILITY", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_STAT_AGILITY, TOTAL_VALUE, float(enchant_amount), apply);
-                            ApplyStatBuffMod(STAT_AGILITY, (float)enchant_amount, apply);
+                            HandleStatFlatModifier(UNIT_MOD_STAT_AGILITY, TOTAL_VALUE, float(enchant_amount), apply);
+                            UpdateStatBuffMod(STAT_AGILITY);
                             break;
                         case ITEM_MOD_STRENGTH:
                             TC_LOG_DEBUG("entities.player.items", "+ %u STRENGTH", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_STAT_STRENGTH, TOTAL_VALUE, float(enchant_amount), apply);
-                            ApplyStatBuffMod(STAT_STRENGTH, (float)enchant_amount, apply);
+                            HandleStatFlatModifier(UNIT_MOD_STAT_STRENGTH, TOTAL_VALUE, float(enchant_amount), apply);
+                            UpdateStatBuffMod(STAT_STRENGTH);
                             break;
                         case ITEM_MOD_INTELLECT:
                             TC_LOG_DEBUG("entities.player.items", "+ %u INTELLECT", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_STAT_INTELLECT, TOTAL_VALUE, float(enchant_amount), apply);
-                            ApplyStatBuffMod(STAT_INTELLECT, (float)enchant_amount, apply);
+                            HandleStatFlatModifier(UNIT_MOD_STAT_INTELLECT, TOTAL_VALUE, float(enchant_amount), apply);
+                            UpdateStatBuffMod(STAT_INTELLECT);
                             break;
                         case ITEM_MOD_SPIRIT:
                             TC_LOG_DEBUG("entities.player.items", "+ %u SPIRIT", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_STAT_SPIRIT, TOTAL_VALUE, float(enchant_amount), apply);
-                            ApplyStatBuffMod(STAT_SPIRIT, (float)enchant_amount, apply);
+                            HandleStatFlatModifier(UNIT_MOD_STAT_SPIRIT, TOTAL_VALUE, float(enchant_amount), apply);
+                            UpdateStatBuffMod(STAT_SPIRIT);
                             break;
                         case ITEM_MOD_STAMINA:
                             TC_LOG_DEBUG("entities.player.items", "+ %u STAMINA", enchant_amount);
-                            HandleStatModifier(UNIT_MOD_STAT_STAMINA, TOTAL_VALUE, float(enchant_amount), apply);
-                            ApplyStatBuffMod(STAT_STAMINA, (float)enchant_amount, apply);
+                            HandleStatFlatModifier(UNIT_MOD_STAT_STAMINA, TOTAL_VALUE, float(enchant_amount), apply);
+                            UpdateStatBuffMod(STAT_STAMINA);
                             break;
                         case ITEM_MOD_DEFENSE_SKILL_RATING:
                             ApplyRatingMod(CR_DEFENSE_SKILL, enchant_amount, apply);
@@ -13849,12 +14011,12 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                             TC_LOG_DEBUG("entities.player.items", "+ %u EXPERTISE", enchant_amount);
                             break;
                         case ITEM_MOD_ATTACK_POWER:
-                            HandleStatModifier(UNIT_MOD_ATTACK_POWER, TOTAL_VALUE, float(enchant_amount), apply);
-                            HandleStatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(enchant_amount), apply);
+                            HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER, TOTAL_VALUE, float(enchant_amount), apply);
+                            HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(enchant_amount), apply);
                             TC_LOG_DEBUG("entities.player.items", "+ %u ATTACK_POWER", enchant_amount);
                             break;
                         case ITEM_MOD_RANGED_ATTACK_POWER:
-                            HandleStatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(enchant_amount), apply);
+                            HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, float(enchant_amount), apply);
                             TC_LOG_DEBUG("entities.player.items", "+ %u RANGED_ATTACK_POWER", enchant_amount);
                             break;
 //                        case ITEM_MOD_FERAL_ATTACK_POWER:
@@ -13882,7 +14044,7 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                             TC_LOG_DEBUG("entities.player.items", "+ %u SPELL_PENETRATION", enchant_amount);
                             break;
                         case ITEM_MOD_BLOCK_VALUE:
-                            HandleBaseModValue(SHIELD_BLOCK_VALUE, FLAT_MOD, float(enchant_amount), apply);
+                            HandleBaseModFlatValue(SHIELD_BLOCK_VALUE, float(enchant_amount), apply);
                             TC_LOG_DEBUG("entities.player.items", "+ %u BLOCK_VALUE", enchant_amount);
                             break;
                         case ITEM_MOD_SPELL_HEALING_DONE:   // deprecated
@@ -13894,20 +14056,9 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                 }
                 case ITEM_ENCHANTMENT_TYPE_TOTEM:           // Shaman Rockbiter Weapon
                 {
-                    if (getClass() == CLASS_SHAMAN)
-                    {
-                        float addValue;
-                        if (item->GetSlot() == EQUIPMENT_SLOT_MAINHAND)
-                        {
-                            addValue = float(enchant_amount * item->GetTemplate()->Delay / 1000.0f);
-                            HandleStatModifier(UNIT_MOD_DAMAGE_MAINHAND, TOTAL_VALUE, addValue, apply);
-                        }
-                        else if (item->GetSlot() == EQUIPMENT_SLOT_OFFHAND)
-                        {
-                            addValue = float(enchant_amount * item->GetTemplate()->Delay / 1000.0f);
-                            HandleStatModifier(UNIT_MOD_DAMAGE_OFFHAND, TOTAL_VALUE, addValue, apply);
-                        }
-                    }
+                    WeaponAttackType const attackType = Player::GetAttackBySlot(item->GetSlot());
+                    if (attackType != MAX_ATTACK)
+                        UpdateDamageDoneMods(attackType);
                     break;
                 }
                 case ITEM_ENCHANTMENT_TYPE_USE_SPELL:
@@ -14605,8 +14756,8 @@ bool Player::CanSeeStartQuest(Quest const* quest)
 {
     if (!DisableMgr::IsDisabledFor(DISABLE_TYPE_QUEST, quest->GetQuestId(), this) && SatisfyQuestClass(quest, false) && SatisfyQuestRace(quest, false) &&
         SatisfyQuestSkill(quest, false) && SatisfyQuestExclusiveGroup(quest, false) && SatisfyQuestReputation(quest, false) &&
-        SatisfyQuestPreviousQuest(quest, false) && SatisfyQuestNextChain(quest, false) &&
-        SatisfyQuestPrevChain(quest, false) && SatisfyQuestDay(quest, false) && SatisfyQuestWeek(quest, false) &&
+        SatisfyQuestDependentQuests(quest, false) && SatisfyQuestNextChain(quest, false) &&
+        SatisfyQuestDay(quest, false) && SatisfyQuestWeek(quest, false) &&
         SatisfyQuestMonth(quest, false) && SatisfyQuestSeasonal(quest, false))
     {
         return getLevel() + sWorld->getIntConfig(CONFIG_QUEST_HIGH_LEVEL_HIDE_DIFF) >= quest->GetMinLevel();
@@ -14621,8 +14772,8 @@ bool Player::CanTakeQuest(Quest const* quest, bool msg)
         && SatisfyQuestStatus(quest, msg) && SatisfyQuestExclusiveGroup(quest, msg)
         && SatisfyQuestClass(quest, msg) && SatisfyQuestRace(quest, msg) && SatisfyQuestLevel(quest, msg)
         && SatisfyQuestSkill(quest, msg) && SatisfyQuestReputation(quest, msg)
-        && SatisfyQuestPreviousQuest(quest, msg) && SatisfyQuestTimed(quest, msg)
-        && SatisfyQuestNextChain(quest, msg) && SatisfyQuestPrevChain(quest, msg)
+        && SatisfyQuestDependentQuests(quest, msg) && SatisfyQuestTimed(quest, msg)
+        && SatisfyQuestNextChain(quest, msg)
         && SatisfyQuestDay(quest, msg) && SatisfyQuestWeek(quest, msg)
         && SatisfyQuestMonth(quest, msg) && SatisfyQuestSeasonal(quest, msg)
         && SatisfyQuestConditions(quest, msg);
@@ -15328,97 +15479,90 @@ bool Player::SatisfyQuestLog(bool msg) const
     return false;
 }
 
-bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg)
+bool Player::SatisfyQuestDependentQuests(Quest const* qInfo, bool msg) const
+{
+    return SatisfyQuestPreviousQuest(qInfo, msg) && SatisfyQuestDependentPreviousQuests(qInfo, msg);
+}
+
+bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const
 {
     // No previous quest (might be first quest in a series)
-    if (qInfo->prevQuests.empty())
+    if (!qInfo->GetPrevQuestId())
         return true;
 
-    for (Quest::PrevQuests::const_iterator iter = qInfo->prevQuests.begin(); iter != qInfo->prevQuests.end(); ++iter)
-    {
-        uint32 prevId = abs(*iter);
+    uint32 prevId = std::abs(qInfo->GetPrevQuestId());
+    // If positive previous quest rewarded, return true
+    if (qInfo->GetPrevQuestId() > 0 && m_RewardedQuests.count(prevId) > 0)
+        return true;
 
-        Quest const* qPrevInfo = sObjectMgr->GetQuestTemplate(prevId);
+    // If negative previous quest active, return true
+    if (qInfo->GetPrevQuestId() < 0 && GetQuestStatus(prevId) == QUEST_STATUS_INCOMPLETE)
+        return true;
 
-        if (qPrevInfo)
-        {
-            // If any of the positive previous quests completed, return true
-            if (*iter > 0 && m_RewardedQuests.find(prevId) != m_RewardedQuests.end())
-            {
-                // skip one-from-all exclusive group
-                if (qPrevInfo->GetExclusiveGroup() >= 0)
-                    return true;
-
-                // each-from-all exclusive group (< 0)
-                // can be start if only all quests in prev quest exclusive group completed and rewarded
-                ObjectMgr::ExclusiveQuestGroupsBounds range(sObjectMgr->mExclusiveQuestGroups.equal_range(qPrevInfo->GetExclusiveGroup()));
-
-                for (; range.first != range.second; ++range.first)
-                {
-                    uint32 exclude_Id = range.first->second;
-
-                    // skip checked quest id, only state of other quests in group is interesting
-                    if (exclude_Id == prevId)
-                        continue;
-
-                    // alternative quest from group also must be completed and rewarded (reported)
-                    if (m_RewardedQuests.find(exclude_Id) == m_RewardedQuests.end())
-                    {
-                        if (msg)
-                        {
-                            SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
-                            TC_LOG_DEBUG("misc", "Player::SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) doesn't have the required quest (1).",
-                                qInfo->GetQuestId(), GetName().c_str(), GetGUID().ToString().c_str());
-                        }
-                        return false;
-                    }
-                }
-                return true;
-            }
-
-            // If any of the negative previous quests active, return true
-            if (*iter < 0 && GetQuestStatus(prevId) != QUEST_STATUS_NONE)
-            {
-                // skip one-from-all exclusive group
-                if (qPrevInfo->GetExclusiveGroup() >= 0)
-                    return true;
-
-                // each-from-all exclusive group (< 0)
-                // can be start if only all quests in prev quest exclusive group active
-                ObjectMgr::ExclusiveQuestGroupsBounds range(sObjectMgr->mExclusiveQuestGroups.equal_range(qPrevInfo->GetExclusiveGroup()));
-
-                for (; range.first != range.second; ++range.first)
-                {
-                    uint32 exclude_Id = range.first->second;
-
-                    // skip checked quest id, only state of other quests in group is interesting
-                    if (exclude_Id == prevId)
-                        continue;
-
-                    // alternative quest from group also must be active
-                    if (GetQuestStatus(exclude_Id) != QUEST_STATUS_NONE)
-                    {
-                        if (msg)
-                        {
-                            SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
-                            TC_LOG_DEBUG("misc", "Player::SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) doesn't have the required quest (2).",
-                                qInfo->GetQuestId(), GetName().c_str(), GetGUID().ToString().c_str());
-
-                        }
-                        return false;
-                    }
-                }
-                return true;
-            }
-        }
-    }
-
-    // Has only positive prev. quests in non-rewarded state
-    // and negative prev. quests in non-active state
+    // Has positive prev. quest in non-rewarded state
+    // and negative prev. quest in non-active state
     if (msg)
     {
         SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
-        TC_LOG_DEBUG("misc", "Player::SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) doesn't have required quest (3).",
+        TC_LOG_DEBUG("misc", "Player::SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) doesn't have required quest %u.",
+            qInfo->GetQuestId(), GetName().c_str(), GetGUID().ToString().c_str(), prevId);
+    }
+
+    return false;
+}
+
+bool Player::SatisfyQuestDependentPreviousQuests(Quest const* qInfo, bool msg) const
+{
+    // No previous quest (might be first quest in a series)
+    if (qInfo->DependentPreviousQuests.empty())
+        return true;
+
+    for (uint32 prevId : qInfo->DependentPreviousQuests)
+    {
+        // checked in startup
+        Quest const* questInfo = sObjectMgr->GetQuestTemplate(prevId);
+        ASSERT(questInfo);
+
+        // If any of the previous quests completed, return true
+        if (IsQuestRewarded(prevId))
+        {
+            // skip one-from-all exclusive group
+            if (questInfo->GetExclusiveGroup() >= 0)
+                return true;
+
+            // each-from-all exclusive group (< 0)
+            // can be start if only all quests in prev quest exclusive group completed and rewarded
+            auto bounds = sObjectMgr->GetExclusiveQuestGroupBounds(questInfo->GetExclusiveGroup());
+            for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            {
+                // skip checked quest id, only state of other quests in group is interesting
+                uint32 exclusiveQuestId = itr->second;
+                if (exclusiveQuestId == prevId)
+                    continue;
+
+                // alternative quest from group also must be completed and rewarded (reported)
+                if (!IsQuestRewarded(exclusiveQuestId))
+                {
+                    if (msg)
+                    {
+                        SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+                        TC_LOG_DEBUG("misc", "Player::SatisfyQuestDependentPreviousQuests: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) doesn't have the required quest (1).",
+                            qInfo->GetQuestId(), GetName().c_str(), GetGUID().ToString().c_str());
+                    }
+
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    // Has only prev. quests in non-rewarded state
+    if (msg)
+    {
+        SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+        TC_LOG_DEBUG("misc", "Player::SatisfyQuestDependentPreviousQuests: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) doesn't have required quest (2).",
             qInfo->GetQuestId(), GetName().c_str(), GetGUID().ToString().c_str());
     }
 
@@ -15565,17 +15709,16 @@ bool Player::SatisfyQuestTimed(Quest const* qInfo, bool msg) const
     return true;
 }
 
-bool Player::SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg)
+bool Player::SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg) const
 {
     // non positive exclusive group, if > 0 then can be start if any other quest in exclusive group already started/completed
     if (qInfo->GetExclusiveGroup() <= 0)
         return true;
 
-    ObjectMgr::ExclusiveQuestGroupsBounds range(sObjectMgr->mExclusiveQuestGroups.equal_range(qInfo->GetExclusiveGroup()));
-
-    for (; range.first != range.second; ++range.first)
+    auto bounds = sObjectMgr->GetExclusiveQuestGroupBounds(qInfo->GetExclusiveGroup());
+    for (auto itr = bounds.first; itr != bounds.second; ++itr)
     {
-        uint32 exclude_Id = range.first->second;
+        uint32 exclude_Id = itr->second;
 
         // skip checked quest id, only state of other quests in group is interesting
         if (exclude_Id == qInfo->GetQuestId())
@@ -15635,38 +15778,6 @@ bool Player::SatisfyQuestNextChain(Quest const* qInfo, bool msg) const
     return true;
 }
 
-bool Player::SatisfyQuestPrevChain(Quest const* qInfo, bool msg)
-{
-    // No previous quest in chain
-    if (qInfo->prevChainQuests.empty())
-        return true;
-
-    for (Quest::PrevChainQuests::const_iterator iter = qInfo->prevChainQuests.begin(); iter != qInfo->prevChainQuests.end(); ++iter)
-    {
-        QuestStatusMap::const_iterator itr = m_QuestStatus.find(*iter);
-
-        // If any of the previous quests in chain active, return false
-        if (itr != m_QuestStatus.end() && itr->second.Status != QUEST_STATUS_NONE)
-        {
-            if (msg)
-            {
-                SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
-                TC_LOG_DEBUG("misc", "Player::SatisfyQuestNextChain: Sent INVALIDREASON_DONT_HAVE_REQ (QuestID: %u) because player '%s' (%s) already did or started next quest in chain.",
-                    qInfo->GetQuestId(), GetName().c_str(), GetGUID().ToString().c_str());
-            }
-            return false;
-        }
-
-        // check for all quests further down the chain
-        // only necessary if there are quest chains with more than one quest that can be skipped
-        //if (!SatisfyQuestPrevChain(prevId, msg))
-        //    return false;
-    }
-
-    // No previous quest in chain active
-    return true;
-}
-
 bool Player::SatisfyQuestDay(Quest const* qInfo, bool msg) const
 {
     if (!qInfo->IsDaily() && !qInfo->IsDFQuest())
@@ -15704,7 +15815,7 @@ bool Player::SatisfyQuestDay(Quest const* qInfo, bool msg) const
     return true;
 }
 
-bool Player::SatisfyQuestWeek(Quest const* qInfo, bool /*msg*/)
+bool Player::SatisfyQuestWeek(Quest const* qInfo, bool /*msg*/) const
 {
     if (!qInfo->IsWeekly() || m_weeklyquests.empty())
         return true;
@@ -15726,7 +15837,7 @@ bool Player::SatisfyQuestSeasonal(Quest const* qInfo, bool /*msg*/) const
     return itr->second.find(qInfo->GetQuestId()) == itr->second.end();
 }
 
-bool Player::SatisfyQuestMonth(Quest const* qInfo, bool /*msg*/)
+bool Player::SatisfyQuestMonth(Quest const* qInfo, bool /*msg*/) const
 {
     if (!qInfo->IsMonthly() || m_monthlyquests.empty())
         return true;
@@ -18354,10 +18465,10 @@ void Player::_LoadQuestStatus(PreparedQueryResult result)
                 {
                     AddTimedQuest(quest_id);
 
-                    if (quest_time <= sWorld->GetGameTime())
+                    if (quest_time <= GameTime::GetGameTime())
                         questStatusData.Timer = 1;
                     else
-                        questStatusData.Timer = uint32((quest_time - sWorld->GetGameTime()) * IN_MILLISECONDS);
+                        questStatusData.Timer = uint32((quest_time - GameTime::GetGameTime()) * IN_MILLISECONDS);
                 }
                 else
                     quest_time = 0;
@@ -18611,7 +18722,8 @@ void Player::_LoadBoundInstances(PreparedQueryResult result)
 
     Group* group = GetGroup();
 
-    //QueryResult* result = CharacterDatabase.PQuery("SELECT id, permanent, map, difficulty, resettime FROM character_instance LEFT JOIN instance ON instance = id WHERE guid = '%u'", GUID_LOPART(m_guid));
+    //         0          1    2           3            4          5
+    // SELECT id, permanent, map, difficulty, extendState, resettime FROM character_instance LEFT JOIN instance ON instance = id WHERE guid = ?
     if (result)
     {
         do
@@ -18624,7 +18736,7 @@ void Player::_LoadBoundInstances(PreparedQueryResult result)
             uint8 difficulty = fields[3].GetUInt8();
             BindExtensionState extendState = BindExtensionState(fields[4].GetUInt8());
 
-            time_t resetTime = time_t(fields[5].GetUInt32());
+            time_t resetTime = time_t(fields[5].GetUInt64());
             // the resettime for normal instances is only saved when the InstanceSave is unloaded
             // so the value read from the DB may be wrong here but only if the InstanceSave is loaded
             // and in that case it is not used
@@ -19560,8 +19672,17 @@ void Player::_SaveInventory(SQLTransaction& trans)
     for (uint8 i = BUYBACK_SLOT_START; i < BUYBACK_SLOT_END; ++i)
     {
         Item* item = m_items[i];
-        if (!item || item->GetState() == ITEM_NEW)
+        if (!item)
             continue;
+        
+        if (item->GetState() == ITEM_NEW)
+        {
+            if (ItemTemplate const* itemTemplate = item->GetTemplate())
+                if (itemTemplate->Flags & ITEM_FLAG_HAS_LOOT)
+                    sLootItemStorage->RemoveStoredLootForContainer(item->GetGUID().GetCounter());
+
+            continue;
+        }
 
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_INVENTORY_BY_ITEM);
         stmt->setUInt32(0, item->GetGUID().GetCounter());
@@ -19571,6 +19692,10 @@ void Player::_SaveInventory(SQLTransaction& trans)
         stmt->setUInt32(0, item->GetGUID().GetCounter());
         trans->Append(stmt);
         m_items[i]->FSetState(ITEM_NEW);
+
+        if (ItemTemplate const* itemTemplate = item->GetTemplate())
+            if (itemTemplate->Flags & ITEM_FLAG_HAS_LOOT)
+                sLootItemStorage->RemoveStoredLootForContainer(item->GetGUID().GetCounter());
     }
 
     // Updated played time for refundable items. We don't do this in Player::Update because there's simply no need for it,
@@ -19780,7 +19905,7 @@ void Player::_SaveQuestStatus(SQLTransaction& trans)
                 stmt->setUInt32(index++, statusItr->first);
                 stmt->setUInt8(index++, uint8(statusItr->second.Status));
                 stmt->setBool(index++, statusItr->second.Explored);
-                stmt->setUInt32(index++, uint32(statusItr->second.Timer / IN_MILLISECONDS+ sWorld->GetGameTime()));
+                stmt->setUInt32(index++, uint32(statusItr->second.Timer / IN_MILLISECONDS+ GameTime::GetGameTime()));
 
                 for (uint8 i = 0; i < 4; i++)
                     stmt->setUInt16(index++, statusItr->second.CreatureOrGOCount[i]);
@@ -22511,7 +22636,7 @@ void Player::SendInitialPacketsBeforeAddToMap()
     SendEquipmentSetList();
 
     data.Initialize(SMSG_LOGIN_SETTIMESPEED, 4 + 4 + 4);
-    data.AppendPackedTime(sWorld->GetGameTime());
+    data.AppendPackedTime(GameTime::GetGameTime());
     data << float(0.01666667f);                             // game speed
     data << uint32(0);                                      // added in 3.1.2
     GetSession()->SendPacket(&data);
@@ -22650,7 +22775,7 @@ void Player::ApplyEquipCooldown(Item* pItem)
     if (pItem->GetTemplate()->Flags & ITEM_FLAG_NO_EQUIP_COOLDOWN)
         return;
 
-    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point now = GameTime::GetGameTimeSteadyPoint();
     for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
     {
         _Spell const& spellData = pItem->GetTemplate()->Spells[i];
@@ -24618,7 +24743,7 @@ void Player::StoreLootItem(uint8 lootSlot, Loot* loot)
 
         // LootItem is being removed (looted) from the container, delete it from the DB.
         if (loot->containerID > 0)
-            loot->DeleteLootItemFromContainerItemDB(item->itemid);
+            sLootItemStorage->RemoveStoredLootItemForContainer(loot->containerID, item->itemid, item->count);
 
     }
     else
@@ -24903,7 +25028,6 @@ void Player::HandleFall(MovementInfo const& movementInfo)
             TC_LOG_DEBUG("entities.player", "FALLDAMAGE z=%f sz=%f pZ=%f FallTime=%d mZ=%f damage=%d SF=%d", movementInfo.pos.GetPositionZ(), height, GetPositionZ(), movementInfo.fallTime, height, damage, safe_fall);
         }
     }
-    RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_LANDING); // No fly zone - Parachute
 }
 
 void Player::ResetAchievements()
@@ -25967,7 +26091,7 @@ void Player::ResetTimeSync()
     m_timeSyncCounter = 0;
     m_timeSyncTimer = 0;
     m_timeSyncClient = 0;
-    m_timeSyncServer = getMSTime();
+    m_timeSyncServer = GameTime::GetGameTimeMS();
 }
 
 void Player::SendTimeSync()
@@ -25978,7 +26102,7 @@ void Player::SendTimeSync()
 
     // Schedule next sync in 10 sec
     m_timeSyncTimer = 10000;
-    m_timeSyncServer = getMSTime();
+    m_timeSyncServer = GameTime::GetGameTimeMS();
 }
 
 void Player::SetReputation(uint32 factionentry, uint32 value)

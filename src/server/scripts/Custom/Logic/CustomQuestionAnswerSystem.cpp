@@ -263,12 +263,14 @@ bool CustomQuestionAnswerSystem::hasPlayerNewQuestionsToAnswer(int accountid)
 void CustomQuestionAnswerSystem::insertNewAnsweredQuestionforPlayer(int questionid, Player * player)
 {
 	CustomCharacterSystem * CharacterSystem = 0;
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	std::string accountname = CharacterSystem->getAccountName(player->GetSession()->GetAccountId());
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_PLAYER_ALREADY_ANSWERED_QUESTIONS);
 	stmt->setInt32(0, player->GetSession()->GetAccountId());
 	stmt->setString(1, accountname);
 	stmt->setInt32(2, questionid);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 void CustomQuestionAnswerSystem::insertNewQuestion(Player * player, const char* args)
@@ -326,7 +328,7 @@ void CustomQuestionAnswerSystem::insertNewQuestion(Player * player, const char* 
 	if (checkifItemIsForbidden) {
 		std::string accountname = "";
 		accountname = CharacterSystem->getAccountName(player->GetSession()->GetAccountId());
-		GMLogic->addCompleteGMCountLogic(player->GetSession()->GetAccountId(), player->GetSession()->GetPlayer(), "Try to generate a forbidden Item Reward in a question!");
+		GMLogic->addCompleteGMCountLogic(player->GetSession()->GetPlayer(), "Try to generate a forbidden Item Reward in a question!");
 		ChatHandler(player->GetSession()).PSendSysMessage("##########################################################");
 		ChatHandler(player->GetSession()).PSendSysMessage("Warning: GM should be a supporter not a cheater!");
 		ChatHandler(player->GetSession()).PSendSysMessage("This incident has been logged in DB.");

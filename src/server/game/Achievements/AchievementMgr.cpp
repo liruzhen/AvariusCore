@@ -27,6 +27,7 @@
 #include "DBCEnums.h"
 #include "DisableMgr.h"
 #include "GameEventMgr.h"
+#include "GameTime.h"
 #include "GridNotifiersImpl.h"
 #include "Guild.h"
 #include "GuildMgr.h"
@@ -290,7 +291,7 @@ bool AchievementCriteriaData::IsValid(AchievementCriteriaEntry const* criteria)
     }
 }
 
-bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Unit const* target, uint32 miscvalue1 /*= 0*/) const
+bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Unit const* target, uint32 miscvalue1 /*= 0*/, uint32 miscvalue2 /* = 0*/) const
 {
     switch (dataType)
     {
@@ -395,10 +396,13 @@ bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Un
         }
         case ACHIEVEMENT_CRITERIA_DATA_TYPE_S_EQUIPPED_ITEM:
         {
-            ItemTemplate const* pProto = sObjectMgr->GetItemTemplate(miscvalue1);
-            if (!pProto)
+            AchievementCriteriaEntry const* entry = ASSERT_NOTNULL(sAchievementMgr->GetAchievementCriteria(criteria_id));
+
+            uint32 itemId = (entry->Type == ACHIEVEMENT_CRITERIA_TYPE_EQUIP_EPIC_ITEM ? miscvalue2 : miscvalue1);
+            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(itemId);
+            if (!itemTemplate)
                 return false;
-            return pProto->ItemLevel >= equipped_item.item_level && pProto->Quality >= equipped_item.item_quality;
+            return itemTemplate->ItemLevel >= equipped_item.item_level && itemTemplate->Quality >= equipped_item.item_quality;
         }
         case ACHIEVEMENT_CRITERIA_DATA_TYPE_MAP_ID:
             return source->GetMapId() == map_id.mapId;
@@ -412,7 +416,7 @@ bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Un
             birthday_tm.tm_year += birthday_login.nth_birthday;
 
             time_t birthday = mktime(&birthday_tm);
-            time_t now = sWorld->GetGameTime();
+            time_t now = GameTime::GetGameTime();
             return now <= birthday + DAY && now >= birthday;
         }
         case ACHIEVEMENT_CRITERIA_DATA_TYPE_S_KNOWN_TITLE:
@@ -434,10 +438,10 @@ bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Un
     return false;
 }
 
-bool AchievementCriteriaDataSet::Meets(Player const* source, Unit const* target, uint32 miscvalue /*= 0*/) const
+bool AchievementCriteriaDataSet::Meets(Player const* source, Unit const* target, uint32 miscvalue1 /*= 0*/, uint32 miscvalue2 /* = 0*/) const
 {
     for (Storage::const_iterator itr = storage.begin(); itr != storage.end(); ++itr)
-        if (!itr->Meets(criteria_id, source, target, miscvalue))
+        if (!itr->Meets(criteria_id, source, target, miscvalue1, miscvalue2))
             return false;
 
     return true;
@@ -755,7 +759,7 @@ void AchievementMgr::UpdateAchievementCriteria(AchievementCriteriaTypes type, ui
                 break;
             default:
                 if (AchievementCriteriaDataSet const* data = sAchievementMgr->GetCriteriaDataSet(achievementCriteria))
-                    if (!data->Meets(GetPlayer(), unit, miscValue1))
+                    if (!data->Meets(GetPlayer(), unit, miscValue1, miscValue2))
                         continue;
                 break;
         }
@@ -1129,7 +1133,7 @@ bool AchievementMgr::IsCompletedCriteria(AchievementCriteriaEntry const* achieve
     if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
     {
         // someone on this realm has already completed that achievement
-        if (sAchievementMgr->IsRealmCompleted(achievement, GetPlayer()->GetInstanceId()))
+        if (sAchievementMgr->IsRealmCompleted(achievement))
             return false;
     }
 
@@ -1493,7 +1497,8 @@ void AchievementMgr::CompletedAchievement(AchievementEntry const* achievement)
     ca.date = time(NULL);
     ca.changed = true;
 
-    sAchievementMgr->SetRealmCompleted(achievement, GetPlayer()->GetInstanceId());
+    if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
+        sAchievementMgr->SetRealmCompleted(achievement);
 
     UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_COMPLETE_ACHIEVEMENT, achievement->ID);
     UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_EARN_ACHIEVEMENT_POINTS, achievement->Points);
@@ -2244,6 +2249,35 @@ AchievementCriteriaEntryList const& AchievementGlobalMgr::GetAchievementCriteria
     return m_AchievementCriteriasByType[type];
 }
 
+bool AchievementGlobalMgr::IsRealmCompleted(AchievementEntry const* achievement) const
+{
+    auto itr = _allCompletedAchievements.find(achievement->ID);
+    if (itr == _allCompletedAchievements.end())
+        return false;
+
+    if (itr->second == std::chrono::system_clock::time_point::min())
+        return false;
+
+    if (itr->second == std::chrono::system_clock::time_point::max())
+        return true;
+
+    // Allow completing the realm first kill for entire minute after first person did it
+    // it may allow more than one group to achieve it (highly unlikely)
+    // but apparently this is how blizz handles it as well
+    if (achievement->Flags & ACHIEVEMENT_FLAG_REALM_FIRST_KILL)
+        return (GameTime::GetGameTimeSystemPoint() - itr->second) > Minutes(1);
+
+    return true;
+}
+
+void AchievementGlobalMgr::SetRealmCompleted(AchievementEntry const* achievement)
+{
+    if (IsRealmCompleted(achievement))
+        return;
+
+    _allCompletedAchievements[achievement->ID] = GameTime::GetGameTimeSystemPoint();
+}
+
 //==========================================================
 void AchievementGlobalMgr::LoadAchievementCriteriaList()
 {
@@ -2487,6 +2521,14 @@ void AchievementGlobalMgr::LoadCompletedAchievements()
 {
     uint32 oldMSTime = getMSTime();
 
+    // Populate _allCompletedAchievements with all realm first achievement ids to make multithreaded access safer
+    // while it will not prevent races, it will prevent crashes that happen because std::unordered_map key was added
+    // instead the only potential race will happen on value associated with the key
+    for (uint32 i = 0; i < sAchievementStore.GetNumRows(); ++i)
+        if (AchievementEntry const* achievement = sAchievementStore.LookupEntry(i))
+            if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
+                _allCompletedAchievements[achievement->ID] = std::chrono::system_clock::time_point::min();
+
     QueryResult result = CharacterDatabase.Query("SELECT achievement FROM character_achievement GROUP BY achievement");
 
     if (!result)
@@ -2513,11 +2555,10 @@ void AchievementGlobalMgr::LoadCompletedAchievements()
             continue;
         }
         else if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
-            m_allCompletedAchievements[achievementId] = uint32(0xFFFFFFFF);
-    }
-    while (result->NextRow());
+            _allCompletedAchievements[achievementId] = std::chrono::system_clock::time_point::max();
+    } while (result->NextRow());
 
-    TC_LOG_INFO("server.loading", ">> Loaded %lu realm first completed achievements in %u ms.", (unsigned long)m_allCompletedAchievements.size(), GetMSTimeDiffToNow(oldMSTime));
+    TC_LOG_INFO("server.loading", ">> Loaded %lu realm first completed achievements in %u ms.", (unsigned long)_allCompletedAchievements.size(), GetMSTimeDiffToNow(oldMSTime));
 }
 
 void AchievementGlobalMgr::LoadRewards()
@@ -2689,11 +2730,4 @@ AchievementEntry const* AchievementGlobalMgr::GetAchievement(uint32 achievementI
 AchievementCriteriaEntry const* AchievementGlobalMgr::GetAchievementCriteria(uint32 criteriaId) const
 {
     return sAchievementCriteriaStore.LookupEntry(criteriaId);
-}
-
-void AchievementGlobalMgr::OnInstanceDestroyed(uint32 instanceId)
-{
-    for (auto& realmCompletion : m_allCompletedAchievements)
-        if (realmCompletion.second == instanceId)
-            realmCompletion.second = uint32(0xFFFFFFFF);
 }

@@ -55,7 +55,7 @@ UPDATE `command` SET `permission`='195' WHERE `name`='gm ingame';
 
 /* ex-commands */
 DELETE FROM command WHERE `name` = 'question';
-INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('question', 193, '');
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('question', 195, '');
 
 DELETE FROM command WHERE `name` = 'question set';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('question set', 193, 'Syntax: .question [Question] [Answer] [Itemid] [Quantity]');
@@ -66,19 +66,22 @@ INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('question get', 195
 
 /* ITEM CODE BEFEHL */
 DELETE FROM command WHERE `name`='coupon';
-INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('coupon', 195, '');  
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('coupon', 193, '');  
 
 DELETE FROM command WHERE `name`='coupon redeem';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('coupon redeem', 195, 'Syntax: .coupon reedem [Your RedeemCore].');   
 
 DELETE FROM command WHERE `name`='coupon generate';
-INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('coupon generate', 195, 'Generate a new coupun. Syntax: .coupon generate [ITEMID] [ITEMQuantity] [How often should the Code be used]');   
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('coupon generate', 194, 'Generate a new coupun. Syntax: .coupon generate [ITEMID] [ITEMQuantity] [How often should the Code be used]');   
 
 /* Fremdwerbung */
 DELETE FROM command WHERE `name`='werbung';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('werbung', 195, '');   
 
-/* Report Quest */
+/* Report System*/
+DELETE FROM command WHERE `name`='report';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('report', 195, '');  
+
 DELETE FROM command WHERE `name`='report quest';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('report quest', 195, '');   
 
@@ -89,10 +92,24 @@ DELETE FROM command WHERE `name`='report activate';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('report activate', 193, '');  
 
 
+/* Gildenhaus */
+DELETE FROM `trinity_string` WHERE `entry`='11500';
+INSERT INTO `trinity_string` (`entry`,`content_default`) VALUES (11500, 'Deine Gilde besitzt noch kein Gildenhaus.');
+DELETE FROM `command` WHERE `name`='gh';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('gh', 195, 'Syntax: .gh Teleportiert dich zu eurem Gildenhaus (Kann nicht im Kampf, Flug oder auf einem Mount verwendet werden)');
+
 
 /* Custom Xp Rate */
 DELETE FROM command WHERE `name`='xprate';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('xprate', 195, '');   
+
+
+/* Firstcharacter */
+DELETE FROM command WHERE `name`='firstcharacter';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('firstcharacter', 195, ''); 
+
+DELETE FROM command WHERE `name`='firstcharacter get';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('firstcharacter get', 195, ''); 
 
 
 /* Autobroadcast*/
@@ -101,6 +118,14 @@ INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('autobroadcast', 19
 
 DELETE FROM command WHERE `name`='autobroadcast set';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('autobroadcast set', 193, ''); 
+
+
+/* Testsciprt */
+DELETE FROM command WHERE `name`='testscript';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('testscript', 193, ''); 
+
+DELETE FROM command WHERE `name`='testscript one';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('testscript one', 193, ''); 
 
 /*Testcommands */
 DELETE FROM command WHERE `name`='logic';
@@ -133,6 +158,11 @@ INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('logic gmaddlog', 1
 DELETE FROM command WHERE `name`='logic playtime';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('logic playtime', 193, ''); 
 
-
 DELETE FROM command WHERE `name`='logic playinsert';
 INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('logic playinsert', 193, ''); 
+
+DELETE FROM command WHERE `name`='logic locale';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('logic locale', 193, ''); 
+
+DELETE FROM command WHERE `name`='logic translate';
+INSERT INTO `command` (`name`, `permission`, `help`) VALUES ('logic translate', 193, ''); 

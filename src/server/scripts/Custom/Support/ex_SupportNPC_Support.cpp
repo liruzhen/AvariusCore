@@ -45,6 +45,8 @@ public:
     
 		bool OnGossipHello(Player* player, Creature* creature)
         {
+			if (creature->IsQuestGiver())
+				player->PrepareQuestMenu(creature->GetGUID());
 
 			if (sConfigMgr->GetBoolDefault("Support.NPC", true)) {
 				player->PlayerTalkClass->GetGossipMenu().AddMenuItem(-1, GOSSIP_ICON_CHAT, "Help for new Players!", GOSSIP_SENDER_MAIN, 100, "", 0, false);
@@ -151,7 +153,7 @@ public:
 				
 				case 10:
 				{
-					player->TeleportTo(0,-12832.98,-1374.24,113.46,3.97);
+					player->TeleportTo(0,-12832.98f,-1374.24f,113.46f,3.97f);
 					player->SaveRecallPosition();
 					player->SaveToDB();
                     return true;

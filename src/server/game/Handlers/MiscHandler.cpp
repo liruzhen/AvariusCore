@@ -23,6 +23,7 @@
 #include "Opcodes.h"
 #include "Log.h"
 #include "Player.h"
+#include "GameTime.h"
 #include "GossipDef.h"
 #include "World.h"
 #include "ObjectMgr.h"
@@ -131,13 +132,13 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPacket& recvData)
     if (GetPlayer()->HasUnitState(UNIT_STATE_DIED))
         GetPlayer()->RemoveAurasByType(SPELL_AURA_FEIGN_DEATH);
 
-    if ((unit && unit->GetCreatureTemplate()->ScriptID != unit->LastUsedScriptID) || (go && go->GetGOInfo()->ScriptId != go->LastUsedScriptID))
+    if ((unit && unit->GetScriptId() != unit->LastUsedScriptID) || (go && go->GetScriptId() != go->LastUsedScriptID))
     {
         TC_LOG_DEBUG("network", "WORLD: HandleGossipSelectOptionOpcode - Script reloaded while in use, ignoring and set new scipt id");
         if (unit)
-            unit->LastUsedScriptID = unit->GetCreatureTemplate()->ScriptID;
+            unit->LastUsedScriptID = unit->GetScriptId();
         if (go)
-            go->LastUsedScriptID = go->GetGOInfo()->ScriptId;
+            go->LastUsedScriptID = go->GetScriptId();
         _player->PlayerTalkClass->SendCloseGossip();
         return;
     }
@@ -1253,7 +1254,7 @@ void WorldSession::HandleTimeSyncResp(WorldPacket& recvData)
 
     TC_LOG_DEBUG("network", "Time sync received: counter %u, client ticks %u, time since last sync %u", counter, clientTicks, clientTicks - _player->m_timeSyncClient);
 
-    uint32 ourTicks = clientTicks + (getMSTime() - _player->m_timeSyncServer);
+    uint32 ourTicks = clientTicks + (GameTime::GetGameTimeMS() - _player->m_timeSyncServer);
 
     // diff should be small
     TC_LOG_DEBUG("network", "Our ticks: %u, diff %u, latency %u", ourTicks, ourTicks - clientTicks, GetLatency());

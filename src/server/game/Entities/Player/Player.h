@@ -1047,8 +1047,8 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void SetObjectScale(float scale) override
         {
             Unit::SetObjectScale(scale);
-            SetFloatValue(UNIT_FIELD_BOUNDINGRADIUS, scale * DEFAULT_WORLD_OBJECT_SIZE);
-            SetFloatValue(UNIT_FIELD_COMBATREACH, scale * DEFAULT_COMBAT_REACH);
+            SetFloatValue(UNIT_FIELD_BOUNDINGRADIUS, scale * DEFAULT_PLAYER_BOUNDING_RADIUS);
+            SetFloatValue(UNIT_FIELD_COMBATREACH, scale * DEFAULT_PLAYER_COMBAT_REACH);
         }
 
         bool TeleportTo(uint32 mapid, float x, float y, float z, float orientation, uint32 options = 0);
@@ -1183,8 +1183,8 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         Bag*  GetBagByPos(uint8 slot) const;
         Item* GetWeaponForAttack(WeaponAttackType attackType, bool useable = false) const;
         Item* GetShield(bool useable = false) const;
-        static uint8 GetAttackBySlot(uint8 slot);        // MAX_ATTACK if not weapon slot
-        std::vector<Item*> &GetItemUpdateQueue() { return m_itemUpdateQueue; }
+        static WeaponAttackType GetAttackBySlot(uint8 slot);        // MAX_ATTACK if not weapon slot
+        std::vector<Item*>& GetItemUpdateQueue() { return m_itemUpdateQueue; }
         static bool IsInventoryPos(uint16 pos) { return IsInventoryPos(pos >> 8, pos & 255); }
         static bool IsInventoryPos(uint8 bag, uint8 slot);
         static bool IsEquipmentPos(uint16 pos) { return IsEquipmentPos(pos >> 8, pos & 255); }
@@ -1349,19 +1349,20 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestLevel(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestLog(bool msg) const;
-        bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg);
+        bool SatisfyQuestDependentQuests(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestDependentPreviousQuests(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestClass(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestRace(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestReputation(Quest const* qInfo, bool msg);
         bool SatisfyQuestStatus(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestConditions(Quest const* qInfo, bool msg);
         bool SatisfyQuestTimed(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg);
+        bool SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestNextChain(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestPrevChain(Quest const* qInfo, bool msg);
         bool SatisfyQuestDay(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestWeek(Quest const* qInfo, bool msg);
-        bool SatisfyQuestMonth(Quest const* qInfo, bool msg);
+        bool SatisfyQuestWeek(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestMonth(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestSeasonal(Quest const* qInfo, bool msg) const;
         bool GiveQuestSourceItem(Quest const* quest);
         bool TakeQuestSourceItem(uint32 questId, bool msg);
@@ -1548,7 +1549,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool HasActiveSpell(uint32 spell) const;            // show in spellbook
         TrainerSpellState GetTrainerSpellState(TrainerSpell const* trainer_spell) const;
         bool IsSpellFitByClassAndRace(uint32 spell_id) const;
-        bool IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const;
+        bool HandlePassiveSpellLearn(SpellInfo const* spellInfo);
 
         void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask) const;
         void SendInitialSpells();
@@ -1734,7 +1735,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void UpdateRating(CombatRating cr);
         void UpdateAllRatings();
 
-        void CalculateMinMaxDamage(WeaponAttackType attType, bool normalized, bool addTotalPct, float& minDamage, float& maxDamage) override;
+        void CalculateMinMaxDamage(WeaponAttackType attType, bool normalized, bool addTotalPct, float& minDamage, float& maxDamage) const override;
 
         void UpdateDefenseBonusesMod();
         void RecalculateRating(CombatRating cr) { ApplyRatingMod(cr, 0, true);}
@@ -1946,11 +1947,19 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool CanTameExoticPets() const { return IsGameMaster() || HasAuraType(SPELL_AURA_ALLOW_TAME_PET_TYPE); }
 
         void SetRegularAttackTime();
-        void SetBaseModValue(BaseModGroup modGroup, BaseModType modType, float value) { m_auraBaseMod[modGroup][modType] = value; }
-        void HandleBaseModValue(BaseModGroup modGroup, BaseModType modType, float amount, bool apply);
+
+        void HandleBaseModFlatValue(BaseModGroup modGroup, float amount, bool apply);
+        void ApplyBaseModPctValue(BaseModGroup modGroup, float pct);
+
+        void SetBaseModFlatValue(BaseModGroup modGroup, float val);
+        void SetBaseModPctValue(BaseModGroup modGroup, float val);
+
+        void UpdateDamageDoneMods(WeaponAttackType attackType) override;
+        void UpdateBaseModGroup(BaseModGroup modGroup);
+
         float GetBaseModValue(BaseModGroup modGroup, BaseModType modType) const;
         float GetTotalBaseModValue(BaseModGroup modGroup) const;
-        float GetTotalPercentageModValue(BaseModGroup modGroup) const { return m_auraBaseMod[modGroup][FLAT_MOD] + m_auraBaseMod[modGroup][PCT_MOD]; }
+
         void _ApplyAllStatBonuses();
         void _RemoveAllStatBonuses();
 
@@ -1958,7 +1967,14 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
 
         void CastAllObtainSpells();
         void ApplyItemObtainSpells(Item* item, bool apply);
+
+        void UpdateWeaponDependentCritAuras(WeaponAttackType attackType);
+        void UpdateAllWeaponDependentCritAuras();
+
+        void UpdateWeaponDependentAuras(WeaponAttackType attackType);
         void ApplyItemDependentAuras(Item* item, bool apply);
+
+        bool CheckAttackFitToAuraRequirement(WeaponAttackType attackType, AuraEffect const* aurEff) const override;
 
         void _ApplyItemMods(Item* item, uint8 slot, bool apply, bool updateItemAuras = true);
         void _RemoveAllItemMods();
@@ -2434,7 +2450,8 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
 
         ActionButtonList m_actionButtons;
 
-        float m_auraBaseMod[BASEMOD_END][MOD_END];
+        float m_auraBaseFlatMod[BASEMOD_END];
+        float m_auraBasePctMod[BASEMOD_END];
         int16 m_baseRatingValue[MAX_COMBAT_RATING];
         uint32 m_baseSpellPower;
         uint32 m_baseFeralAP;

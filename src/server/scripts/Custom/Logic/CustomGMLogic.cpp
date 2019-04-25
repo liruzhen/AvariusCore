@@ -9,30 +9,35 @@
 //Insert a GM Log action, to control your GM´s. No Return Value. Log is found in Character DB , Tablename: "gm_action"
 void CustomGMLogic::addGMLog(std::string charactername, int characterid, std::string accountname, int accountid, std::string action) {
 
-
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_GM_ACTION);
 	stmt->setString(0, charactername);
 	stmt->setInt32(1, characterid);
 	stmt->setString(2, accountname);
 	stmt->setInt32(3, accountid);
 	stmt->setString(4, action);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 void CustomGMLogic::addGMPlayerCount(int accountid)
 {
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_GM_ACTION_PLAYER_COUNT);
 	stmt->setInt32(0, accountid);
 	stmt->setInt32(1, 1);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 void CustomGMLogic::updateGMPlayerCount(int counter, int accountid)
 {
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GM_ACTION_PLAYER_COUNT);
 	stmt->setInt32(0, counter);
 	stmt->setInt32(1, accountid);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 PreparedQueryResult CustomGMLogic::selectGMPlayerCount(int accountid)
@@ -58,7 +63,7 @@ void CustomGMLogic::insertNewAutobroadCast(Player* player,const char* args)
 		return;
 	}
 
-	char* message = strtok(NULL, " ");
+	char* message = strtok(NULL, ",");
 	if (!message) {
 		player->GetSession()->SendNotification("Without message the command will not work!");
 		return;
@@ -69,12 +74,14 @@ void CustomGMLogic::insertNewAutobroadCast(Player* player,const char* args)
 	addGMLog(player->GetSession()->GetPlayerName(), player->GetGUID(), accountname, player->GetSession()->GetAccountId(), "Insert new Autobroadcast");
 	int realmid = sConfigMgr->GetIntDefault("RealmID", 1);
 	int idmaxcount = selectMaxCountAutobroadcastID(realmid);
+	SQLTransaction trans = LoginDatabase.BeginTransaction();
 	PreparedStatement * stmt = LoginDatabase.GetPreparedStatement(LOGIN_INS_AUTOBROADCAST_NEW);
 	stmt->setInt32(0, realmid);
 	stmt->setInt32(1, idmaxcount);
 	stmt->setInt32(2, weight);
 	stmt->setString(3, message);
-	LoginDatabase.Execute(stmt);
+	trans->Append(stmt);
+	LoginDatabase.CommitTransaction(trans);
 }
 
 int CustomGMLogic::selectMaxCountAutobroadcastID(int realmid)
@@ -95,13 +102,15 @@ int CustomGMLogic::selectMaxCountAutobroadcastID(int realmid)
 
 void CustomGMLogic::insertNewCouponGMLog(std::string charactername, int guid,int itemid, std::string couponcode, int quantity)
 {
+	SQLTransaction trans = CharacterDatabase.BeginTransaction();
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_GM_ACTIONS_COUPON_DETAILS);
 	stmt->setString(0, charactername);
 	stmt->setInt32(1, guid);
 	stmt->setInt32(2, itemid);
 	stmt->setString(3, couponcode);
 	stmt->setInt32(4, quantity);
-	CharacterDatabase.Execute(stmt);
+	trans->Append(stmt);
+	CharacterDatabase.CommitTransaction(trans);
 }
 
 int CustomGMLogic::getGMPlayerCount(int accountid)
@@ -121,16 +130,18 @@ int CustomGMLogic::getGMPlayerCount(int accountid)
 	return counter;
 }
 
-void CustomGMLogic::addCompleteGMCountLogic(int accountid, Player* player, std::string logmessage)
+void CustomGMLogic::addCompleteGMCountLogic(Player* player, std::string logmessage)
 {
 	
 	CustomCharacterSystem * CharacterSystem = 0;
 	PreparedStatement * stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_GM_ACTION_PLAYER_COUNT);
-	stmt->setInt32(0, accountid);
+	stmt->setInt32(0, player->GetSession()->GetAccountId());
 	PreparedQueryResult result = CharacterDatabase.Query(stmt);
 
 	if (!result) {
-		addGMPlayerCount(accountid);
+		addGMPlayerCount(player->GetSession()->GetAccountId());
+		std::string accountname = CharacterSystem->getAccountName(player->GetSession()->GetAccountId());
+		addGMLog(player->GetSession()->GetPlayerName(), player->GetGUID(), accountname, player->GetSession()->GetAccountId(), logmessage);
 		return;
 	}
 
@@ -154,8 +165,8 @@ void CustomGMLogic::addCompleteGMCountLogic(int accountid, Player* player, std::
 	addGMLog(player->GetSession()->GetPlayerName(), player->GetGUID(), accountname, player->GetSession()->GetAccountId(), logmessage);
 	if (sConfigMgr->GetBoolDefault("GM.Security", 1)) {
 		int maxcount = 0;
-		maxcount = sConfigMgr->GetIntDefault("GM.Security.Number", 50);
-		PreparedQueryResult queryresult = selectGMPlayerCount(accountid);
+		maxcount = sConfigMgr->GetIntDefault("GM.Security.Number", 3);
+		PreparedQueryResult queryresult = selectGMPlayerCount(player->GetSession()->GetAccountId());
 		
 		if (!queryresult) {
 			return;
@@ -165,7 +176,7 @@ void CustomGMLogic::addCompleteGMCountLogic(int accountid, Player* player, std::
 		int strikes = array[2].GetInt32();
 
 		if (strikes >= maxcount-1) {
-			std::string accountname = CharacterSystem->getAccountName(accountid);
+			std::string accountname = CharacterSystem->getAccountName(player->GetSession()->GetAccountId());
 			sWorld->BanAccount(BAN_ACCOUNT, accountname, 0, "To many bad Decisions", "AvariusCore");
 			std::ostringstream ss;
 			std::ostringstream tt;
